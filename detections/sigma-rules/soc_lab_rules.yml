@@ -1,0 +1,190 @@
+# ============================================================
+# Sigma Rule: LSASS Memory Access via Sysmon Event 10
+# MITRE ATT&CK: T1003.001 — OS Credential Dumping: LSASS Memory
+# Author: Dhruv Patel | SOC Home Lab
+# ============================================================
+title: LSASS Memory Access — Credential Dumping
+id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+status: experimental
+description: |
+  Detects process access to lsass.exe memory, commonly used by
+  credential dumping tools like Mimikatz, procdump, or ProcExp.
+  Sysmon Event ID 10 (ProcessAccess) fires when a process opens
+  a handle to another process. LSASS is targeted to extract
+  plaintext credentials, NTLM hashes, and Kerberos tickets.
+author: Dhruv Patel
+date: 2025/06/25
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://docs.microsoft.com/en-us/sysinternals/downloads/sysmon
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+logsource:
+  category: process_access
+  product: windows
+detection:
+  selection:
+    EventID: 10
+    TargetImage|endswith: '\lsass.exe'
+  filter_legitimate:
+    SourceImage|endswith:
+      - '\MsMpEng.exe'         # Windows Defender
+      - '\svchost.exe'         # Services
+      - '\wininit.exe'         # Windows init
+      - '\csrss.exe'           # Client Server Runtime
+      - '\services.exe'        # Service Control Manager
+      - '\taskmgr.exe'         # Task Manager
+      - '\lsm.exe'             # Local Session Manager
+  condition: selection and not filter_legitimate
+falsepositives:
+  - Antivirus and EDR tools performing memory inspection
+  - Legitimate administrative tools accessing LSASS
+level: high
+fields:
+  - SourceImage
+  - TargetImage
+  - GrantedAccess
+  - CallTrace
+
+---
+
+# ============================================================
+# Sigma Rule: CertUtil LOLBin Abuse
+# MITRE ATT&CK: T1218 — System Binary Proxy Execution
+#               T1105 — Ingress Tool Transfer
+# ============================================================
+title: CertUtil LOLBin Abuse — Encode/Decode/Download
+id: b2c3d4e5-f6a7-8901-bcde-f12345678901
+status: experimental
+description: |
+  Detects CertUtil.exe being used as a Living-off-the-Land binary
+  to encode/decode files or download payloads. Attackers abuse
+  CertUtil because it is a trusted Windows binary that can bypass
+  application whitelisting and download files from the internet.
+  Common flags: -urlcache -split -f (download), -encode/-decode (obfuscation).
+author: Dhruv Patel
+date: 2025/06/25
+references:
+  - https://attack.mitre.org/techniques/T1218/
+  - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+tags:
+  - attack.defense_evasion
+  - attack.t1218
+  - attack.command_and_control
+  - attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\certutil.exe'
+    CommandLine|contains:
+      - '-encode'
+      - '-decode'
+      - '-urlcache'
+      - '-split'
+      - '-ping'
+  condition: selection
+falsepositives:
+  - Legitimate certificate management by administrators
+  - PKI infrastructure operations
+level: high
+fields:
+  - CommandLine
+  - User
+  - ParentImage
+
+---
+
+# ============================================================
+# Sigma Rule: PowerShell Encoded Command Execution
+# MITRE ATT&CK: T1059.001 — Command and Scripting: PowerShell
+# ============================================================
+title: PowerShell Encoded Command Execution
+id: c3d4e5f6-a7b8-9012-cdef-123456789012
+status: experimental
+description: |
+  Detects PowerShell launched with an encoded command (-EncodedCommand
+  or -enc). Attackers encode PowerShell commands in Base64 to evade
+  signature-based detection and command-line logging. Combined with
+  -WindowStyle Hidden and -NonInteractive, this is a classic attacker
+  pattern for stealthy payload execution.
+author: Dhruv Patel
+date: 2025/06/25
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+tags:
+  - attack.execution
+  - attack.t1059.001
+  - attack.defense_evasion
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - ' -enc '
+      - ' -EncodedCommand '
+      - ' -ec '
+  condition: selection
+falsepositives:
+  - Legitimate administrative scripts that use encoded commands
+  - SCCM/software deployment tools
+level: medium
+fields:
+  - CommandLine
+  - User
+  - ParentImage
+  - ParentCommandLine
+
+---
+
+# ============================================================
+# Sigma Rule: Registry Run Key Persistence
+# MITRE ATT&CK: T1547.001 — Boot/Logon Autostart: Registry Run Keys
+# ============================================================
+title: Registry Run Key Modification — Persistence
+id: d4e5f6a7-b8c9-0123-defa-234567890123
+status: experimental
+description: |
+  Detects modification of registry Run keys commonly used for
+  persistence. Sysmon Event 13 (RegistryEvent - Value Set) fires
+  when a registry value is created or modified. Attackers write
+  malicious executables to Run/RunOnce keys to survive reboots.
+author: Dhruv Patel
+date: 2025/06/25
+references:
+  - https://attack.mitre.org/techniques/T1547/001/
+tags:
+  - attack.persistence
+  - attack.t1547.001
+logsource:
+  product: windows
+  category: registry_set
+detection:
+  selection:
+    EventID: 13
+    TargetObject|contains:
+      - '\Software\Microsoft\Windows\CurrentVersion\Run'
+      - '\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+      - '\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+  filter_legitimate:
+    Image|endswith:
+      - '\MsiExec.exe'
+      - '\setup.exe'
+      - '\install.exe'
+      - '\msiexec.exe'
+  condition: selection and not filter_legitimate
+falsepositives:
+  - Software installers adding legitimate autostart entries
+  - Antivirus or endpoint security tools
+level: medium
+fields:
+  - TargetObject
+  - Details
+  - Image
+  - User

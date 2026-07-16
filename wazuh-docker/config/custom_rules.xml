@@ -1,0 +1,261 @@
+<!-- ============================================================
+     SOC Home Lab — Custom Detection Rules
+     Author: Dhruv Patel
+     Mapped to: MITRE ATT&CK
+     
+     Rule ID range: 100001–100099 (reserved for local custom rules)
+     Severity levels: 1(low) → 15(critical)
+     
+     Coverage:
+       T1003   — Credential Dumping (LSASS)
+       T1059   — PowerShell Abuse
+       T1110   — Brute Force (RDP)
+       T1218   — LOLBins (CertUtil, Mshta, Regsvr32)
+       T1548   — Privilege Escalation
+       T1547   — Persistence (Registry Run Keys)
+       T1136   — New Local User Created
+       T1562   — Defense Evasion (Firewall rule mod)
+       T1055   — Process Injection
+================================================================ -->
+
+<group name="soc_lab,mitre,">
+
+  <!-- ============================================================
+       T1003 — CREDENTIAL DUMPING
+  ============================================================ -->
+
+  <!-- LSASS memory access via Sysmon Event 10 -->
+  <rule id="100001" level="14">
+    <if_group>sysmon_event10</if_group>
+    <field name="win.eventdata.targetImage" type="pcre2">(?i)lsass\.exe</field>
+    <description>Possible LSASS credential dumping detected (Sysmon Event 10)</description>
+    <mitre>
+      <id>T1003.001</id>
+    </mitre>
+    <group>credential_access,lsass,high_severity</group>
+  </rule>
+
+  <!-- Mimikatz via process name -->
+  <rule id="100002" level="15">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)mimikatz</field>
+    <description>Mimikatz execution detected — credential dumping tool</description>
+    <mitre>
+      <id>T1003</id>
+    </mitre>
+    <group>credential_access,mimikatz,critical</group>
+  </rule>
+
+  <!-- procdump targeting LSASS -->
+  <rule id="100003" level="14">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)procdump.*lsass</field>
+    <description>Procdump used to dump LSASS — T1003.001</description>
+    <mitre>
+      <id>T1003.001</id>
+    </mitre>
+    <group>credential_access,procdump,high_severity</group>
+  </rule>
+
+  <!-- ============================================================
+       T1059 — POWERSHELL ABUSE
+  ============================================================ -->
+
+  <!-- PowerShell with encoded command -->
+  <rule id="100010" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)powershell(\.exe)?$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)-enc(odedcommand)?</field>
+    <description>PowerShell encoded command execution detected — T1059.001</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+    <group>execution,powershell,encoded</group>
+  </rule>
+
+  <!-- PowerShell download cradle -->
+  <rule id="100011" level="13">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)powershell(\.exe)?$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(IEX|Invoke-Expression|DownloadString|WebClient|Net\.WebRequest)</field>
+    <description>PowerShell download cradle — possible stage 2 payload download</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1105</id>
+    </mitre>
+    <group>execution,powershell,download_cradle</group>
+  </rule>
+
+  <!-- PowerShell bypass execution policy -->
+  <rule id="100012" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)-ExecutionPolicy\s+(Bypass|Unrestricted)</field>
+    <description>PowerShell execution policy bypass — T1059.001</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+    <group>execution,powershell,policy_bypass</group>
+  </rule>
+
+  <!-- ============================================================
+       T1110 — BRUTE FORCE (RDP)
+  ============================================================ -->
+
+  <!-- Multiple failed RDP logons (Windows Security Event 4625) -->
+  <rule id="100020" level="10" frequency="5" timeframe="60">
+    <if_matched_sid>60122</if_matched_sid>
+    <description>RDP brute force detected — 5 failed logons in 60s</description>
+    <mitre>
+      <id>T1110.001</id>
+    </mitre>
+    <group>authentication,brute_force,rdp</group>
+  </rule>
+
+  <!-- RDP success after multiple failures (possible credential stuffing) -->
+  <rule id="100021" level="14">
+    <if_matched_sid>100020</if_matched_sid>
+    <if_sid>60106</if_sid>
+    <description>Successful logon after RDP brute force — possible compromised credentials</description>
+    <mitre>
+      <id>T1110.001</id>
+      <id>T1078</id>
+    </mitre>
+    <group>authentication,brute_force,rdp,success_after_fail</group>
+  </rule>
+
+  <!-- ============================================================
+       T1218 — LOLBins (Living off the Land Binaries)
+  ============================================================ -->
+
+  <!-- CertUtil encode/decode abuse -->
+  <rule id="100030" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)certutil(\.exe)?$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(-encode|-decode|-urlcache|-split)</field>
+    <description>CertUtil LOLBin abuse — encode/decode or download via certutil</description>
+    <mitre>
+      <id>T1218</id>
+      <id>T1105</id>
+    </mitre>
+    <group>defense_evasion,lolbins,certutil</group>
+  </rule>
+
+  <!-- Mshta HTA execution -->
+  <rule id="100031" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)mshta(\.exe)?$</field>
+    <description>Mshta HTA execution detected — T1218.005</description>
+    <mitre>
+      <id>T1218.005</id>
+    </mitre>
+    <group>defense_evasion,lolbins,mshta</group>
+  </rule>
+
+  <!-- Regsvr32 squiblydoo -->
+  <rule id="100032" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)regsvr32(\.exe)?$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(/s|/u|scrobj)</field>
+    <description>Regsvr32 squiblydoo technique — T1218.010</description>
+    <mitre>
+      <id>T1218.010</id>
+    </mitre>
+    <group>defense_evasion,lolbins,regsvr32</group>
+  </rule>
+
+  <!-- ADExplorer usage (recon tool) -->
+  <rule id="100033" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)ADExplorer(64)?(\.exe)?$</field>
+    <description>ADExplorer launched — possible Active Directory enumeration</description>
+    <mitre>
+      <id>T1087.002</id>
+    </mitre>
+    <group>discovery,ad_recon,adexplorer</group>
+  </rule>
+
+  <!-- ============================================================
+       T1548 — PRIVILEGE ESCALATION
+  ============================================================ -->
+
+  <!-- Token impersonation / privilege adjustment (Event 4672) -->
+  <rule id="100040" level="10">
+    <if_sid>60109</if_sid>
+    <field name="win.eventdata.privilegeList" type="pcre2">SeDebugPrivilege</field>
+    <description>SeDebugPrivilege assigned — possible privilege escalation or tool use</description>
+    <mitre>
+      <id>T1134</id>
+    </mitre>
+    <group>privilege_escalation,token_manipulation</group>
+  </rule>
+
+  <!-- UAC bypass via fodhelper -->
+  <rule id="100041" level="13">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.parentImage" type="pcre2">(?i)fodhelper(\.exe)?$</field>
+    <description>Process spawned by fodhelper — possible UAC bypass T1548.002</description>
+    <mitre>
+      <id>T1548.002</id>
+    </mitre>
+    <group>privilege_escalation,uac_bypass,fodhelper</group>
+  </rule>
+
+  <!-- ============================================================
+       T1547 — PERSISTENCE (Registry Run Keys)
+  ============================================================ -->
+
+  <!-- Sysmon Event 13: Registry value set in Run key -->
+  <rule id="100050" level="11">
+    <if_group>sysmon_event13</if_group>
+    <field name="win.eventdata.targetObject" type="pcre2">(?i)(HKLM|HKCU)\\Software\\Microsoft\\Windows\\CurrentVersion\\Run</field>
+    <description>Registry Run key modified — possible persistence mechanism T1547.001</description>
+    <mitre>
+      <id>T1547.001</id>
+    </mitre>
+    <group>persistence,registry,run_key</group>
+  </rule>
+
+  <!-- ============================================================
+       T1136 — NEW LOCAL USER CREATED
+  ============================================================ -->
+
+  <rule id="100060" level="10">
+    <if_sid>18152</if_sid>
+    <description>New local user account created — possible backdoor account T1136.001</description>
+    <mitre>
+      <id>T1136.001</id>
+    </mitre>
+    <group>persistence,account_creation</group>
+  </rule>
+
+  <!-- ============================================================
+       T1562 — DEFENSE EVASION (Firewall rule modification)
+  ============================================================ -->
+
+  <!-- netsh firewall add -->
+  <rule id="100070" level="11">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)netsh(\.exe)?$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(firewall|advfirewall).*(add|set|delete)</field>
+    <description>Netsh used to modify firewall rules — T1562.004</description>
+    <mitre>
+      <id>T1562.004</id>
+    </mitre>
+    <group>defense_evasion,firewall_modification</group>
+  </rule>
+
+  <!-- ============================================================
+       T1055 — PROCESS INJECTION
+  ============================================================ -->
+
+  <!-- Sysmon Event 8: CreateRemoteThread -->
+  <rule id="100080" level="14">
+    <if_group>sysmon_event8</if_group>
+    <description>CreateRemoteThread detected — possible process injection T1055</description>
+    <mitre>
+      <id>T1055</id>
+    </mitre>
+    <group>defense_evasion,process_injection,remote_thread</group>
+  </rule>
+
+</group>
