@@ -1,6 +1,6 @@
 # SOC Detection Engineering Lab
 
-A detection engineering home lab simulating real-world attack scenarios using Kali Linux, Windows 11, Wazuh SIEM, and an automated Python alert triage pipeline with VirusTotal enrichment.
+A detection engineering home lab simulating real-world attack scenarios using Kali Linux, Windows 11, Wazuh SIEM, Splunk, and an automated Python alert triage pipeline with VirusTotal enrichment.
 
 ---
 
@@ -11,15 +11,19 @@ Kali Linux (Attacker)
         │
         │  simulates attacks
         ▼
-Windows 11 + Sysmon ARM64 (Victim)
+Windows 11 ARM + Sysmon ARM64 (Victim)
         │
         │  ships logs via Wazuh Agent
         ▼
-Wazuh Manager (SIEM) on Kali
+Wazuh Manager 4.14.6 (native ARM64 on Kali)
         │
-        │  alerts.json
+        │  alerts.json via SSH
         ▼
 Python Pipeline (collector → triage → VT enrichment → report)
+        │
+        │  wazuh_to_splunk.py via HEC
+        ▼
+Splunk Enterprise (SPL detection queries + scheduled alerts)
 ```
 
 ---
@@ -89,19 +93,36 @@ Automated 4-stage pipeline:
   T1546.011    1 alert(s)
 ```
 
+### Splunk Integration
+500+ real Wazuh endpoint alerts forwarded into Splunk via HEC. SPL detection queries catching attack scenarios:
+
+```spl
+index=main source="wazuh:alerts" agent_name="HOMELAB-WIN" rule_level>=10
+| table timestamp, rule_level, rule_desc, mitre_id
+| sort -rule_level
+```
+
+Detected in Splunk:
+- Level 15 — Executable file dropped in folder commonly used by malware
+- Level 12 — PowerShell spawned a process executing a base64 encoded command
+
 ---
 
 ## Stack
 
 | Component | Tool |
 |---|---|
-| Attacker VM | Kali Linux ARM64 (UTM on Apple Silicon) |
-| Victim VM | Windows 11 ARM (UTM on Apple Silicon) |
-| Endpoint Logging | Sysmon ARM64 (SwiftOnSecurity config) |
-| SIEM | Wazuh 4.14.6 (native ARM64) |
+| Host Machine | Apple Silicon MacBook (M-series) |
+| VM Platform | UTM (QEMU-based, ARM native) |
+| Attacker VM | Kali Linux ARM64 |
+| Victim VM | Windows 11 ARM |
+| Endpoint Logging | Sysmon ARM64 `Sysmon64a.exe` (SwiftOnSecurity config) |
+| SIEM | Wazuh 4.14.6 (native ARM64, installed on Kali) |
 | Detection Rules | Custom Wazuh XML + Sigma rules |
 | IOC Enrichment | VirusTotal API v3 |
-| Pipeline | Python 3.9+ |
+| Log Forwarding | Splunk HEC (HTTP Event Collector) |
+| SIEM 2 | Splunk Enterprise (local) + SPL detection queries |
+| Pipeline | Python 3.9+ via SSH |
 
 ---
 
@@ -110,7 +131,7 @@ Automated 4-stage pipeline:
 ```
 soc-home-lab/
 ├── wazuh-docker/
-│   ├── docker-compose.yml          # Wazuh stack config
+│   ├── docker-compose.yml          # Wazuh stack config (reference)
 │   └── config/
 │       ├── custom_rules.xml        # 15+ detection rules (T1003, T1059, T1110...)
 │       └── wazuh_cluster/
@@ -122,6 +143,7 @@ soc-home-lab/
 │   ├── pipeline.py                 # Main triage + enrichment + reporting pipeline
 │   ├── requirements.txt
 │   └── .env.template               # Environment variable template
+├── wazuh_to_splunk.py              # Wazuh alerts → Splunk HEC forwarder
 ├── reports/                        # Generated JSON incident reports
 └── docs/
     └── SETUP.md                    # Full setup guide
@@ -132,16 +154,19 @@ soc-home-lab/
 ## Setup
 
 ### Prerequisites
-- Apple Silicon Mac (or Linux host)
-- UTM (for VMs) — https://mac.getutm.app
+- Apple Silicon Mac (M1/M2/M3/M4)
+- UTM — https://mac.getutm.app
+- Kali Linux ARM64 ISO — https://www.kali.org/get-kali/#kali-installer-images
+- Windows 11 ARM ISO (via crystalfetch: `brew install crystalfetch && crystalfetch`)
 - Python 3.9+
 - VirusTotal free API key — https://www.virustotal.com/gui/join-us
+- Splunk Enterprise — https://www.splunk.com/en_us/download/splunk-enterprise.html
 
 ### Quick Start
 
 **1. Clone the repo**
 ```bash
-git clone https://github.com/YOUR_USERNAME/soc-home-lab.git
+git clone https://github.com/dhruvvv55/soc-home-lab.git
 cd soc-home-lab
 ```
 
@@ -169,20 +194,38 @@ C:\Sysmon\Sysmon64a.exe -accepteula -i C:\Sysmon\sysmon-config.xml
 
 **4. Enroll Windows agent**
 ```powershell
-# Replace KALI_IP with your Kali VM IP
 Invoke-WebRequest -Uri "https://packages.wazuh.com/4.x/windows/wazuh-agent-4.7.3-1.msi" -OutFile C:\wazuh-agent.msi
 msiexec.exe /i C:\wazuh-agent.msi WAZUH_MANAGER="KALI_IP" WAZUH_AGENT_NAME="HOMELAB-WIN" /q
 NET START WazuhSvc
 ```
 
-**5. Run the pipeline**
+**5. Set up SSH key (Mac → Kali)**
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_rsa -N ""
+ssh-copy-id dhruv@KALI_IP
+```
+
+**6. Run the pipeline**
 ```bash
 cd pipeline
 pip install -r requirements.txt
 cp .env.template .env
-# Edit .env with your SSH host and VirusTotal API key
 python3 pipeline.py
 python3 pipeline.py --hours 24 --output reports/$(date +%Y%m%d).json
+```
+
+**7. Forward to Splunk**
+```bash
+# Set up Splunk HEC token first (Settings → Data Inputs → HTTP Event Collector)
+pip install requests
+python3 wazuh_to_splunk.py --lines 500
+```
+
+**8. Splunk detection query**
+```spl
+index=main source="wazuh:alerts" agent_name="HOMELAB-WIN" rule_level>=10
+| table timestamp, rule_level, rule_desc, mitre_id
+| sort -rule_level
 ```
 
 ---
@@ -193,10 +236,15 @@ python3 pipeline.py --hours 24 --output reports/$(date +%Y%m%d).json
 Each rule includes filter conditions to reduce noise:
 - LSASS access: excludes known legitimate processes (MsMpEng, svchost, wininit)
 - Registry Run keys: excludes software installers (MsiExec, setup.exe)
-- CertUtil: no legitimate exclusions — all usage is suspicious in this lab environment
+- CertUtil: no legitimate exclusions — all usage is suspicious in this lab
 
 ### Sigma Rules
-Rules are written in Sigma format for portability across SIEM platforms. Convert to Splunk, Elastic, or QRadar using [sigma-cli](https://github.com/SigmaHQ/sigma-cli).
+Rules are written in Sigma format for portability. Convert to Splunk, Elastic, or QRadar using [sigma-cli](https://github.com/SigmaHQ/sigma-cli).
+
+### Apple Silicon Notes
+- Use `Sysmon64a.exe` (ARM64) instead of `Sysmon64.exe` on Windows ARM
+- Wazuh must be installed natively on Kali ARM64 — Docker images are x86 only
+- UTM with Virtualize mode (not Emulate) for native ARM performance
 
 ---
 
@@ -206,8 +254,9 @@ Rules are written in Sigma format for portability across SIEM platforms. Convert
 - MITRE ATT&CK framework mapping
 - Endpoint telemetry (Sysmon configuration and log analysis)
 - Alert triage and incident response workflows
-- Security automation (Python, REST APIs, SSH)
+- Security automation (Python, SSH, REST APIs)
 - IOC enrichment (VirusTotal API)
+- Splunk log ingestion via HEC and SPL detection queries
 - Threat simulation (Kali Linux attack tooling)
 
 ---
@@ -215,4 +264,3 @@ Rules are written in Sigma format for portability across SIEM platforms. Convert
 ## Author
 
 **Dhruv Patel** — MS Cybersecurity Engineering, USC  
-[LinkedIn](https://www.linkedin.com/in/dhruvvv55/) · [Portfolio](https://dhruv-ashok-patel-portfolio.vercel.app/)
